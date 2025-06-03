@@ -413,6 +413,23 @@ docs.to_csv("data.csv", index=False)
 \end{minted}
 
 \subsection{Построение тезаурусов}
+\subsubsection{Word2Vec}
+Обучим модель Word2Vec на полученных данных. Для этого напишем следующую программу:
+\begin{minted}{python3}
+from gensim.models import Word2Vec
+import pandas as pd
+
+document = pd.read_csv("data.csv")
+texts = document["News_Tokens"].apply(lambda x: x.split(" "))
+model = Word2Vec(sentences=texts, vector_size=100, window=5,min_count=1, sg=0)
+model.save('word2vec_5_sgu.model')
+\end{minted}
+
+Получив модель, построим тезаурус:
+\begin{minted}{python3}
+
+\end{minted}
+\subsubsection{GloVe}
 \subsection{Сравнение тезаурусов}
 
 \conclusion
