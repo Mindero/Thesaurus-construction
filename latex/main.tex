@@ -427,10 +427,197 @@ model.save('word2vec_5_sgu.model')
 
 Получив модель, построим тезаурус:
 \begin{minted}{python3}
+from gensim.models import Word2Vec
+import pandas as pd
 
+document = pd.read_csv("data.csv")
+texts = document["News_Tokens"].apply(lambda x: x.split(" ")).explode().unique()
+model = Word2Vec.load("word2vec_5_sgu.model")
+
+results = []
+
+for word in texts:
+    try:
+        # Получаем 10 ближайших слов
+        similar_words = model.wv.most_similar(word, topn=10)
+        results.append([word, similar_words])
+    except KeyError:
+        # Если слово не в модели, пропускаем его
+        print(f"Слово '{word}' не найдено в модели.")
+
+df_results = pd.DataFrame(results, columns=["Word", "Most_Similar_Word"])
+
+df_results.to_csv("similar_words10.csv", index=False)
 \end{minted}
 \subsubsection{GloVe}
+Для создания модели GloVe склонируем их официальный репозиторий\footnote{https://github.com/stanfordnlp/GloVe}. Далее выполним следующие команды:
+\begin{minted}{bash}
+build/vocab_count -min-count 5 -verbose 2 < corpus.txt > vocab.txt
+build/cooccur -memory 4.0 -vocab-file vocab.txt -verbose 2 -window-size 15 < corpustxt >cooccurrence.bin
+build/shuffle -memory 4.0 -verbose 2 < cooccurrence.bin > cooccurrence.shuf.bin
+build/glove -save-file vectors -threads 8 -input-file cooccurrence.shuf.bin -x-max10 -iter 15 -vector-size 50 -binary 2 -vocab-file vocab.txt -verbose 2
+\end{minted}
+
+Далее сгенерируем модель:
+\begin{minted}{python3}
+import pandas as pd
+from gensim import models
+
+model = models.KeyedVectors.load_word2vec_format('vectors.txt', binary=False, no_header=True)
+document = pd.read_excel("../News_SGU_31077_Processed_1.xlsx")
+texts = document["News_Tokens"].apply(lambda x: x.split(" ")).explode().unique()
+results = []
+skipped=0
+for word in texts:
+    try:
+        # Получаем 10 ближайших слов
+        similar_words = model.most_similar(word, topn=10)
+        results.append([word, similar_words])
+    except KeyError:
+        # Если слово не в модели, пропускаем его
+        skipped += 1
+        continue
+
+df_results = pd.DataFrame(results, columns=["Word", "Most_Similar_Word"])
+print(f"Пропустили {skipped} слов")
+df_results.to_csv("sim-words10-glove.csv", index=False)
+\end{minted}
 \subsection{Сравнение тезаурусов}
+Возьмём случайные 20 слов и найдём самые близкие слова по мнению каждой модели.
+
+Для этого напишем скрипт:
+\begin{minted}{python3}
+import pandas as pd
+import os
+
+# Пути к файлам и соответствующие названия колонок
+file_paths = {
+    'bert': '/bert/sim-words5-bert.csv',
+    'glove': '/glove_python/sim-words10-glove.csv',
+    'pmi': '/pmi/similar_words_pmi.csv',
+    'word2vec': '/word2vec/similar_words10.csv'
+}
+
+# Создаем пустой DataFrame с колонкой 'word'
+data = pd.DataFrame(columns=['word'])
+
+# Обрабатываем каждый файл
+for model_name, path in file_paths.items():
+    # Читаем CSV-файл
+    full_path = ".." + path
+    df = pd.read_csv(full_path)
+    
+    # Переименовываем колонку Most_Similar_Word в название модели
+    df = df.rename(columns={'Most_Similar_Word': model_name})
+    
+    # Если это первый файл, используем его слова как основу
+    if data.empty:
+        data['word'] = df['Word']
+    
+    # Добавляем данные в основной DataFrame
+    data[model_name] = df[model_name]
+import ast
+# Функция для проверки, является ли значение пустым спискили NaN
+def is_valid_similar_words(value):
+    if pd.isna(value):  # проверяем NaN
+        return False
+    if isinstance(value, str):  # если данные хранятся кстроки (например, "[('слово', 0.5), ...]")
+        try:
+            lst = ast.literal_eval(value)  # преобразустроку в список
+            return len(lst) > 0  # True, если список пустой
+        except (ValueError, SyntaxError):
+            return False
+    elif isinstance(value, list):  # если данные ужеформате списка
+        return len(value) > 0
+    else:
+        return False  # на случай других форматов
+
+# Применяем фильтрацию: оставляем строки, где ВСЕ столбцыпохожими словами не пусты
+filtered_data = data[
+    data['bert'].apply(is_valid_similar_words) &
+    data['glove'].apply(is_valid_similar_words) &
+    data['pmi'].apply(is_valid_similar_words) &
+    data['word2vec'].apply(is_valid_similar_words)
+]
+n = 100  # кол-во лучайных стр
+random_sample = filtered_data.sample(n=n, random_state=42) # random_state для воспроизводимости
+
+# Сохраняем в новый CSV-файл
+output_file = 'random_sample_similar_words.csv'
+random_sample.to_csv(output_file, index=Falsencoding='utf-8')
+\end{minted}
+
+Полученныый результат отражен на табл. \ref{table:cherrypick}.
+
+Сгенерируем для каждой модели граф.
+\begin{minted}{python3}
+import pandas as pd
+import os
+
+# Пути к файлам и соответствующие названия колонок
+file_paths = {
+    'bert': '/bert/sim-words5-bert.csv',
+    'glove': '/glove_python/sim-words10-glove.csv',
+    'pmi': '/pmi/similar_words_pmi.csv',
+    'word2vec': '/word2vec/similar_words10.csv'
+}
+
+data = {}
+for model_name, path in file_paths.items():
+  full_path = ".." + path
+  df = pd.read_csv(full_path)
+  data[model_name] = df
+import networkx as nx
+from ast import literal_eval
+
+graphs = {}
+for model_name, df in data.items():
+    G = nx.Graph()  # или nx.DiGraph() для направленного графа
+    
+    for _, row in df.iterrows():
+        word = row['Word']
+        similar_words = row['Most_Similar_Word']
+        
+        # Пропускаем пустые списки
+        if not similar_words or pd.isna(similar_words):
+            continue
+        
+        # Преобразуем строку в список кортежей (если данные в формате строки)
+        if isinstance(similar_words, str):
+            try:
+                similar_words = literal_eval(similar_words)
+            except (ValueError, SyntaxError):
+                continue
+        
+        # Добавляем рёбра в граф
+        for similar_word, weight in similar_words:
+            G.add_edge(word, similar_word, weight=weight)
+    graphs[model_name] = G    
+    # nx.write_gexf(G, f"{model_name}_graph.gexf")  # форматEXF для Gephi
+    print(f"Граф '{model_name}' содержит {len(G.nodes)} узлов {len(G.edges)} рёбер.")
+
+from community import community_louvain
+for model_name, G in graphs.items():
+  print(f"model name: {model_name}")
+  partition = community_louvain.best_partition(G, weight='weight')
+  # Кол-во кластеров
+  num_clusters = max(partition.values()) + 1
+  print(f"Число кластеров (Louvain): {num_clusters}")
+  
+  # Размеры кластеров
+  from collections import Counter
+  cluster_sizes = Counter(partition.values())
+  print(f"Размеры кластеров: {cluster_sizes.most_common(5)}")  # Топ-5 кластеров
+
+  # 3. Модулярность (качество кластеризации)
+  modularity = community_louvain.modularity(partition, G, weight='weight')
+  print(f"Модулярность: {modularity:.3f}")
+\end{minted}
+
+Результат отражен в табл. \ref{table:graph}.
+
+Визуализируем полученные графы с помощью программы Gephi "--- бесплатный пакет программ для анализа и визуализации сетей. Ознакомиться с результатом можно на рисунках \ref{fig:graph-word2vec}, \ref{fig:graph-glove}.
+
 
 \conclusion
 
