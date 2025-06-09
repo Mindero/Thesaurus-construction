@@ -374,128 +374,355 @@ v_i = w_i + \tilde{w}_i
   
 Лемматизация, в свою очередь, представляет собой процесс приведения слова к его начальной, словарной форме — лемме. Это позволяет уменьшить количество уникальных словоформ в тексте, объединив различные грамматические формы одного и того же слова (например, «пошёл», «идёт», «шли» — к лемме «идти»). Благодаря лемматизации повышается точность анализа, поскольку слова с одинаковым значением, но разными формами, будут обрабатываться как единое понятие.
 
-В новостях часто встречаются имена людей, городов, стран, наименования различных компаний, которые не привносят смысл в предложение. Избавимся от них тоже:
-\begin{minted}{python3}
-import pandas as pd
-from natasha import (
-      NewsEmbedding,
-      NewsNERTagger,
-      Doc
-  )
-docs = pd.read_excel("News_SGU_31077_Processed_1.xlsx")
+В новостях часто встречаются имена людей, городов, стран, наименования различных компаний, которые не привносят смысл в предложение, поэтому от этого также стоит избавиться.
 
-emb = NewsEmbedding()
-ner_tagger = NewsNERTagger(emb)
+Программный код, выполняющий обработку текста, можно рассмотреть в приложении \ref{apx:tokenization}.
 
-def remove_proper_nouns(text):
-    if not isinstance(text, str) or not text.strip():
-        return text
-    
-    doc = Doc(text)
-    doc.tag_ner(ner_tagger)
-    
-    if not doc.spans:
-        return text
-        
-    spans_to_remove = [span for span in doc.spans if span.type in ['PER', 'LOC', 'ORG']]
-    
-    if not spans_to_remove:
-        return text
-        
-    text_cleaned = text
-    for span in sorted(spans_to_remove, key=lambda x: x.start, reverse=True):
-        text_cleaned = text_cleaned[:span.start] + text_cleaned[span.stop:]
-        
-    return text_cleaned.strip()
-    
-docs['News_Tokens'] = docs['News_Tokens'].apply(remove_proper_nouns)
-docs.to_csv("data.csv", index=False)
-\end{minted}
+Ознакомиться со статистикой полученных данных можно в табл. \ref{table:preprocess}.
+\begin{table}[!h]
+    \centering
+    % \footnotesize
+    \begin{tabular}{|l|l|}
+    \hline
+    \multicolumn{1}{|c|}{\textbf{Статистика}}  & \multicolumn{1}{c|}{\textbf{Значение}} \\ \hline
+    Количество новостей                        & 31077                                  \\ \hline
+    Общее количество предложений               & 423175                                 \\ \hline
+    Среднее количество предложений на новость  & 13.62                                  \\ \hline
+    Общее количество токенов                   & 4293732                                \\ \hline
+    Среднее количество токенов на новость      & 138.16                                 \\ \hline
+    Максимальное количество токенов на новость & 166                                    \\ \hline
+    Минимальное количество токенов на новость  & 1                                      \\ \hline
+    Количество уникальных токенов              & 45204                                  \\ \hline
+    \end{tabular} 
+    \caption{Статистика по полученным данным}
+    \label{table:preprocess}
+\end{table}
 
 \subsection{Построение тезаурусов}
 \subsubsection{Word2Vec}
 Обучим модель Word2Vec на полученных данных. Для этого напишем следующую программу:
 \begin{minted}{python3}
+import dask.dataframe as dd
+import dask.bag as db
 from gensim.models import Word2Vec
-import pandas as pd
-
-document = pd.read_csv("data.csv")
-texts = document["News_Tokens"].apply(lambda x: x.split(" "))
-model = Word2Vec(sentences=texts, vector_size=100, window=5,min_count=1, sg=0)
-model.save('word2vec_5_sgu.model')
+docs = dd.read_parquet("../output.pq/")
+texts = docs['News_Tokens'].compute()
+bag = db.from_sequence(texts)
+sentences = bag.flatten().map(lambda x: x.split()).compute()
+model = Word2Vec(sentences=sentences, vector_size=250, window=7,min_count=5, sg=0)
+model.save('word2vec_sent_5_sgu.model')
 \end{minted}
 
 Получив модель, построим тезаурус:
 \begin{minted}{python3}
-from gensim.models import Word2Vec
 import pandas as pd
-
-document = pd.read_csv("data.csv")
-texts = document["News_Tokens"].apply(lambda x: x.split(" ")).explode().unique()
-model = Word2Vec.load("word2vec_5_sgu.model")
-
+import dask.dataframe as dd
+import dask.bag as db
+from gensim.models import Word2Vec
+docs = dd.read_parquet("../output.pq/")
+model = Word2Vec.load("word2vec_sent_5_sgu.model")
+texts = docs['News_Tokens'].compute()
+bag = db.from_sequence(texts)
+sentences = bag.flatten()
+words = sentences.map(lambda x: x.split()).flatten().distinct().compute()
 results = []
-
-for word in texts:
+threshold = 0.7
+for word in words:
     try:
         # Получаем 10 ближайших слов
         similar_words = model.wv.most_similar(word, topn=10)
-        results.append([word, similar_words])
+        filtered_words = [(w, sim) for w, sim in similar_words if sim >= threshold]
+        results.append([word, filtered_words])
     except KeyError:
         # Если слово не в модели, пропускаем его
         print(f"Слово '{word}' не найдено в модели.")
 
 df_results = pd.DataFrame(results, columns=["Word", "Most_Similar_Word"])
 
-df_results.to_csv("similar_words10.csv", index=False)
+df_results.to_csv("similar_words_sent_5.csv", index=False)
 \end{minted}
+Первые 10 строчек полученного файла:
+\begin{table}[!h]
+    \centering
+    \footnotesize
+    \begin{tabular}{|l|l|}
+    \hline
+    \multicolumn{1}{|c|}{\textbf{Word}} & \multicolumn{1}{c|}{\textbf{Most\_Similar\_Word}}                                                                                                                                                                                                                                                                                                                                             \\ \hline
+    май                                 & \begin{tabular}[c]{@{}l@{}}"{[}('февраль', 0.8803005218505859), ('октябрь', 0.8746454119682312), ('апрель', 0.8725210428237915), \\   ('ноябрь', 0.857973039150238), ('декабрь', 0.8578871488571167), ('июнь', 0.8487043380737305), \\   ('март', 0.8360908627510071), ('январь', 0.8248278498649597), ('сентябрь', 0.8231253623962402), \\   ('август', 0.7303727865219116){]}"\end{tabular} \\ \hline
+    состояться                          & \begin{tabular}[c]{@{}l@{}}"{[}('пройти', 0.8558952808380127), ('завершиться', 0.7617708444595337), \\    ('открыться', 0.7213159799575806), ('проходить', 0.7007029056549072){]}"\end{tabular}                                                                                                                                                                                               \\ \hline
+    акция                               & {[}{]}                                                                                                                                                                                                                                                                                                                                                                                        \\ \hline
+    бессмертный                         & "{[}('полк', 0.949421226978302), ('георгиевский', 0.7148336172103882){]}"                                                                                                                                                                                                                                                                                                                     \\ \hline
+    полк                                & "{[}('бессмертный', 0.949421226978302){]}"                                                                                                                                                                                                                                                                                                                                                    \\ \hline
+    который                             & {[}{]}                                                                                                                                                                                                                                                                                                                                                                                        \\ \hline
+    принять                             & "{[}('принимать', 0.8259356021881104){]}"                                                                                                                                                                                                                                                                                                                                                     \\ \hline
+    участие                             & {[}{]}                                                                                                                                                                                                                                                                                                                                                                                        \\ \hline
+    студент                             & {[}{]}                                                                                                                                                                                                                                                                                                                                                                                        \\ \hline
+    \end{tabular}
+    \caption{Первые 10 строчек тезауруса, построенного моделью Word2Vec}
+\end{table}
 \subsubsection{GloVe}
 Для создания модели GloVe склонируем их официальный репозиторий\footnote{https://github.com/stanfordnlp/GloVe}. Далее выполним следующие команды:
 \begin{minted}{bash}
 build/vocab_count -min-count 5 -verbose 2 < corpus.txt > vocab.txt
-build/cooccur -memory 4.0 -vocab-file vocab.txt -verbose 2 -window-size 15 < corpustxt >cooccurrence.bin
+build/cooccur -memory 4.0 -vocab-file vocab.txt -verbose 2 -window-size 7 < corpus.txt >cooccurrence.bin
 build/shuffle -memory 4.0 -verbose 2 < cooccurrence.bin > cooccurrence.shuf.bin
-build/glove -save-file vectors -threads 8 -input-file cooccurrence.shuf.bin -x-max10 -iter 15 -vector-size 50 -binary 2 -vocab-file vocab.txt -verbose 2
+build/glove -save-file vectors -threads 12 -input-file cooccurrence.shuf.bin -x-max 10 -iter 15 -vector-size 250 -binary 2 -vocab-file vocab.txt -verbose 2
 \end{minted}
 
-Далее сгенерируем модель:
+По полученной модели построим тезаурус:
 \begin{minted}{python3}
 import pandas as pd
 from gensim import models
+import dask.dataframe as dd
+import dask.bag as db
 
 model = models.KeyedVectors.load_word2vec_format('vectors.txt', binary=False, no_header=True)
-document = pd.read_excel("../News_SGU_31077_Processed_1.xlsx")
-texts = document["News_Tokens"].apply(lambda x: x.split(" ")).explode().unique()
+docs = dd.read_parquet("../output.pq/")
+texts = docs['News_Tokens'].compute()
+bag = db.from_sequence(texts)
+sentences = bag.flatten()
+words = sentences.map(lambda x: x.split()).flatten().distinct().compute()
 results = []
+threshold = 0.7
 skipped=0
-for word in texts:
+for word in words:
     try:
         # Получаем 10 ближайших слов
         similar_words = model.most_similar(word, topn=10)
-        results.append([word, similar_words])
+        filtered_words = [(w, sim) for w, sim in similar_words if sim >= threshold]
+        results.append([word, filtered_words])
     except KeyError:
         # Если слово не в модели, пропускаем его
+        print(f"Слово '{word}' не найдено в модели.")
         skipped += 1
         continue
 
 df_results = pd.DataFrame(results, columns=["Word", "Most_Similar_Word"])
 print(f"Пропустили {skipped} слов")
-df_results.to_csv("sim-words10-glove.csv", index=False)
+df_results.to_csv("sim-words_sent_5_glove.csv", index=False)
 \end{minted}
 \subsection{Сравнение тезаурусов}
-Возьмём случайные 20 слов и найдём самые близкие слова по мнению каждой модели.
+Возьмём случайные 10 слов и найдём самые близкие слова по мнению каждой модели. Ознакомиться с программным кодом, который выполняет это можно в приложении \ref{apx:cherrypick}. Результат 
 
-Для этого напишем скрипт:
+Полученныый результат отражен на табл. \ref{table:cherrypick}.
+
+\begin{table}[!h]
+    \centering
+    \footnotesize
+    \begin{tabular}{|l|l|l|}
+    \hline
+    \multicolumn{1}{|c|}{\textbf{Word}} & \multicolumn{1}{c|}{\textbf{GloVe}}                                                                                                                            & \textbf{Word2Vec}                                                                                                                                                    \\ \hline
+    недорого                            & \begin{tabular}[c]{@{}l@{}}{[}('развлекаться', 0.77), ('метать', 0.73), \\ ('непогода', 0.72), ('энергично', 0.72), \\ ('географически', 0.71){]}\end{tabular} & \begin{tabular}[c]{@{}l@{}}{[}('инк', 0.86), ('прожект', 0.86), \\ ('хармонь', 0.85), ('траффик', 0.85), \\ ('берингия', 0.85)"{]}\end{tabular}                      \\ \hline
+    голод                               & {[}('холод', 0.72){]}                                                                                                                                          & \begin{tabular}[c]{@{}l@{}}{[}('фашист', 0.86), ('холод', 0.84), \\ ('умирать', 0.83), ('утрата', 0.83), \\ ('умерший', 0.83){]}\end{tabular}                        \\ \hline
+    орфография                          & {[}('пунктуация', 0.86){]}                                                                                                                                     & {[}('пунктуация', 0.72){]}                                                                                                                                           \\ \hline
+    внимательность                      & {[}('сосредоточенность', 0.74){]}                                                                                                                              & \begin{tabular}[c]{@{}l@{}}{[}('быстрота', 0.84), ('коммуникабельность', 0.78), \\ ('смекалка', 0.77), ('сноровка', 0.77), \\ ('находчивость', 0.76){]}\end{tabular} \\ \hline
+    обсценный                           & \begin{tabular}[c]{@{}l@{}}{[}('нецензурный', 0.76), \\ ('лексика', 0.74){]}\end{tabular}                                                                      & \begin{tabular}[c]{@{}l@{}}{[}('жаргон', 0.80), ('фразеологический', 0.79), \\ ('иврит', 0.78), ('искра', 0.77), \\ ('онтогенетический', 0.77){]}\end{tabular}       \\ \hline
+    трещина                             & {[}('ворона', 0.71){]}                                                                                                                                         & \begin{tabular}[c]{@{}l@{}}{[}('термометр', 0.90), ('макароны', 0.89), \\ ('укладка', 0.89), ('наледь', 0.89), \\ ('балка', 0.89){]}\end{tabular}                    \\ \hline
+    кадмий                              & {[}('селенид', 0.86){]}                                                                                                                                        & \begin{tabular}[c]{@{}l@{}}{[}('селенид', 0.94), ('силанизировать', 0.87), \\ ('стабилизировать', 0.87), ('альбумин', 0.86),\\ ('бесшовный', 0.86){]}\end{tabular}   \\ \hline
+    омс                                 & {[}('полис', 0.70){]}                                                                                                                                          & \begin{tabular}[c]{@{}l@{}}{[}('полис', 0.91), ('снилс', 0.86), \\ ('дубликат', 0.82), ('предъявление', 0.82), \\ ('пин', 0.81){]}\end{tabular}                      \\ \hline
+    автомат                             & {[}('калашников', 0.74){]}                                                                                                                                     & \begin{tabular}[c]{@{}l@{}}{[}('калашников', 0.75), ('разборка', 0.73), \\ ('сборка', 0.72), ('гранат', 0.71){]}\end{tabular}                                        \\ \hline
+    жажда                               & {[}('утолять', 0.84){]}                                                                                                                                        & \begin{tabular}[c]{@{}l@{}}{[}('сдерживать', 0.77), ('запах', 0.77), \\ ('наполнять', 0.77), ('притворство', 0.77), \\ ('аромат', 0.77){]}\end{tabular}              \\ \hline
+    \end{tabular}
+    \caption{Самых близких слов по мнению GloVe и Word2Vec для 10 случайных слов из корпуса}
+    \label{table:cherrypick}
+\end{table}
+
+Видим, что в целом модель GloVe даёт более точные ответы. Кроме этого, модель Word2Vec предлагает сильно больше близких слов, большинство из которых ничего общего с рассматриваемым словом не имеет. Заметим, что существуют слова, для которых модель дает совсем неправильные ответы (слово \textit{недорого}, \textit{трещина}).
+
+Сгенерируем для каждой модели граф. Граф является ориентированным. Вершиной в графе является слово, а ребро "--- факт того, что слово является близким для рассматриваемого с весом, равным косиносному расстоянию между ними. С программным кодом, генерирующим подобный граф, можно ознакомиться в приложении \ref{apx:graph}.
+
+Характеристики графов отражены в табл. \ref{table:graph}.
+
+\begin{table}[!h]
+    \centering
+    \begin{tabular}{|l|l|l|}
+    \hline
+    \multicolumn{1}{|c|}{\textbf{Характеристика}}                                                & \multicolumn{1}{c|}{\textbf{GloVe}} & \textbf{Word2Vec} \\ \hline
+    Кол-во вершин                                                                                & 18402                               & 18401             \\ \hline
+    Кол-во ребер                                                                                 & 9921                                & 86834             \\ \hline
+    Кол-во неизолированных вершин                                                                & 3690                                & 12908             \\ \hline
+    \begin{tabular}[c]{@{}l@{}}Кол-во компонент \\ (без учёта изолированных вершин)\end{tabular} & 770                                 & 337               \\ \hline
+    Кол-во сообществ                                                                             & 800                                 & 349               \\ \hline
+    Модулярность                                                                                 & 0.453                               & 0.597             \\ \hline
+    \end{tabular}
+    \caption{Сравнительная характеристика графов моделей}
+    \label{table:graph}
+\end{table}
+
+Визуализируем полученные графы с помощью программы Gephi "--- бесплатный пакет программ для анализа и визуализации сетей. Ознакомиться с результатом можно на рисунках \ref{fig:graph-word2vec}, \ref{fig:graph-glove}.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.8\textwidth]{word2vec.png}
+    \caption{Граф, полученный моделью Word2Vec}
+    \label{fig:graph-word2vec}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.8\textwidth]{glove.png}
+    \caption{Граф, полученный моделью GloVe}
+    \label{fig:graph-glove}
+\end{figure}
+
+\conclusion
+
+
+% Отобразить все источники. Даже те, на которые нет ссылок.
+% \nocite{*}
+% \inputencoding{cp1251}
+% \bibliographystyle{gost780uv}
+% \bibliography{thesis}
+% \inputencoding{utf8}
+
+% Окончание основного документа и начало приложений Каждая последующая секция
+% документа будет являться приложением
+\appendix
+\section{Программный код, выполняющий обработку текста}
+\label{apx:tokenization}
+\begin{minted}{python3}
+import pandas as pd
+import pymorphy3
+import re
+import dask.dataframe as dd
+
+def string_dev(a_in):
+    x_in = re.sub(r'\n', ' ', a_in)
+    y_in = x_in.lower()
+    b_in = re.sub(r'&\w+;', ' ', y_in)
+    d_in = re.sub(r'<[^>]*>', ' ', b_in)
+    f_in = re.sub(r'www\.\w+\.\w{2,3}?', ' ', d_in)
+    a_in = re.sub(r'\xad', '', f_in)
+    c_in = re.sub(r'\\xa0-', '', a_in)
+    u_in = re.sub(r'\\u200e', '', c_in)
+    w_in = re.sub(r'\d+', '', u_in)
+    y_in = re.sub(r'\-', ' ', w_in)
+    yy_in = re.sub(r'_+', ' ', y_in)
+    yyy_in = re.sub(r'[…—–/()"\[\]\\\\,\-:;<>©@№#%\'\+\*“”&~\$\^«»_і‑]+', '', yy_in)
+    q_in = re.sub(r'[a-z]*', '', yyy_in)
+    sss_in = re.sub(r'\b\w{,2}\b', '', q_in)
+    qms_in = re.sub(r'\s{2,}', ' ', sss_in)
+    nms_in = qms_in.strip()
+    return nms_in
+
+def lematization(f_input_list):
+    morph = pymorphy3.MorphAnalyzer()
+    lnorm = []
+    for word in f_input_list:
+        p = morph.parse(word)[0]
+        lnorm.append(p.normal_form)
+    return lnorm
+
+def del_my_stop_words(word_tokens):
+    stop_words_nltk = {'который', 'кому', 'имя', 'сегодня', 'вчера', 'завтра', 'также', 'в', 'во', 'свой',
+                       'это', 'часто', 'зачастую', 'мочь', 'смочь', 'а', 'без', 'более', 'больше', 'будет',
+                       'будто', 'бы', 'был', 'была', 'были', 'было', 'быть', 'в', 'вам', 'вас', 'вдруг',
+                       'ведь', 'во', 'вот', 'впрочем', 'все', 'всегда', 'всего', 'всех', 'всю', 'вы', 'где',
+                       'да', 'даже', 'два', 'для', 'до', 'другой', 'его', 'ее', 'ей', 'ему', 'если', 'есть',
+                       'еще', 'ж', 'же', 'за', 'зачем', 'здесь', 'и', 'из', 'или', 'им', 'иногда', 'их', 'к',
+                       'как', 'какая', 'какой', 'когда', 'конечно', 'кто', 'куда', 'ли', 'лучше', 'между',
+                       'меня', 'мне', 'много', 'может', 'можно', 'мой', 'моя', 'мы', 'на', 'над', 'надо',
+                       'наконец', 'нас', 'не', 'него', 'нее', 'ней', 'нельзя', 'нет', 'ни', 'нибудь', 'никогда',
+                       'ним', 'них', 'ничего', 'но', 'ну', 'о', 'об', 'один', 'он', 'она', 'они', 'опять', 'от',
+                       'перед', 'по', 'под', 'после', 'потом', 'потому', 'почти', 'при', 'про', 'раз', 'разве',
+                       'с', 'со', 'сам', 'свою', 'себе', 'себя', 'сейчас', 'c', 'со', 'совсем', 'так', 'такой',
+                       'там', 'тебя', 'тем', 'теперь', 'то', 'тогда', 'того', 'тоже', 'только', 'том', 'тот',
+                       'три', 'тут', 'ты', 'у', 'уж', 'уже', 'хорошо', 'хоть', 'что', 'чего', 'чем', 'через',
+                       'что', 'чтоб', 'чтобы', 'чуть', 'эти', 'этого', 'этой', 'этом', 'этот', 'эту', 'я',
+                       'сказал', 'человек', 'жизнь', 'говорил', 'кажется', 'сказать', 'сегодня', 'сказала',
+                       'сказал'}
+
+    my_stop_words = {'сгт', 'свой', 'стать', 'кроме', 'разный', 'около', 'затем', 'помимо', 'ваш', 'вам',
+                     'некоторый', 'лишь', 'каждый', 'самый', 'также', 'неоднократно', 'ещё', 'сразу', 'среди',
+                     'однако', 'вновь', 'иной', 'ныне', 'пока', 'хотя', 'либо', 'немного', 'гораздо', 'ничто',
+                     'нередко', 'наоборот', 'впереди', 'таковой', 'мимо', 'тесно', 'вряд', 'нечто', 'почём',
+                     'почему', 'любой', 'обратно', 'оттуда', 'очень', 'понапрасну', 'поскольку', 'поэтому',
+                     'прежде', 'причём', 'прочий', 'пусть', 'наш', 'несколько', 'никак', 'твой', 'подробный',
+                     'информация'}
+
+    stop_words = stop_words_nltk | my_stop_words
+    filtered_sentence = [w for w in word_tokens if w not in stop_words]
+    return filtered_sentence
+
+from natasha import Segmenter, MorphVocab, NewsEmbedding, NewsMorphTagger, NewsNERTagger, Doc
+
+segmenter = Segmenter()
+morph_vocab = MorphVocab()
+emb = NewsEmbedding()
+morph_tagger = NewsMorphTagger(emb)
+ner_tagger = NewsNERTagger(emb)
+
+def remove_proper_nouns(text):
+    if not isinstance(text, str) or not text.strip():
+        print("text имеет неожидаемый тип")
+        return "error type"
+    try:
+        doc = Doc(text)
+        doc.segment(segmenter)
+        doc.tag_morph(morph_tagger)
+        doc.tag_ner(ner_tagger)
+        if not doc.spans:
+            return text
+        spans_to_remove = [span for span in doc.spans if span.type in ['PER', 'LOC', 'ORG']]
+        text_cleaned = text
+        for span in sorted(spans_to_remove, key=lambda x: x.start, reverse=True):
+            text_cleaned = text_cleaned[:span.start] + text_cleaned[span.stop:]
+        print(text_cleaned)
+        return text_cleaned.strip()
+    except Exception as e:
+        print(f"Ошибка при обработке текста: {text[:50]}... Ошибка: {str(e)}")
+        return "error"
+
+def process_str_of_the_news(string):
+    string_2 = string_dev(string)
+    if len(string_2) != 0:
+        list_of_sentences = re.split(r'[.!?]', string_2)
+        list_of_sentences = [x.split(' ') for x in list_of_sentences if x]
+        filtered_sentences = []
+        for sentence in list_of_sentences:
+            no_stopwords_1 = del_my_stop_words(sentence)
+            lemmatized = lematization(no_stopwords_1)
+            text = ' '.join(lemmatized)
+            text = re.sub(r'\b\w{1,2}\b', '', text)
+            text = re.sub(r'\s{2,}', ' ', text)
+            text = text.strip()
+            if text:
+                filtered_sentences.append(text)
+    return filtered_sentences
+
+import pyarrow as pa
+def apply_tokenization():
+    docs = dd.read_parquet("raw-data.pq").repartition(npartitions=8).loc[:1]
+    print("Read finished")
+    docs['News_Tokens'] = docs['News_Text'].map_partitions(
+        lambda s: s.apply(remove_proper_nouns),
+        meta=("News_Tokens", object)
+    )
+    docs['News_Tokens'] = docs["News_Tokens"].map_partitions(
+        lambda s: s.apply(process_str_of_the_news),
+        meta=("News_Tokens", object)
+    )
+    print("Returning")
+    schema = {
+        "News_Text": pa.string(),
+        "News_Tokens": pa.list_(pa.string()),
+        "News_Title": pa.string()
+    }
+    return docs.to_parquet("output.pq", schema=schema, write_metadata_file=True)
+
+apply_tokenization()
+\end{minted}
+\section{Получение случайных 20 слов}
+\label{apx:cherrypick}
 \begin{minted}{python3}
 import pandas as pd
 import os
 
 # Пути к файлам и соответствующие названия колонок
 file_paths = {
-    'bert': '/bert/sim-words5-bert.csv',
-    'glove': '/glove_python/sim-words10-glove.csv',
-    'pmi': '/pmi/similar_words_pmi.csv',
-    'word2vec': '/word2vec/similar_words10.csv'
+    # 'bert': '/bert/sim-words5-bert.csv',
+    'glove': '/glove_python/sim-words_sent_5_glove.csv',
+    'word2vec': '/word2vec/similar_words_sent_5.csv'
 }
 
 # Создаем пустой DataFrame с колонкой 'word'
@@ -517,50 +744,48 @@ for model_name, path in file_paths.items():
     # Добавляем данные в основной DataFrame
     data[model_name] = df[model_name]
 import ast
-# Функция для проверки, является ли значение пустым спискили NaN
+# Функция для проверки, является ли значение пустым списком или NaN
 def is_valid_similar_words(value):
     if pd.isna(value):  # проверяем NaN
         return False
-    if isinstance(value, str):  # если данные хранятся кстроки (например, "[('слово', 0.5), ...]")
+    if isinstance(value, str):  # если данные хранятся как строки (например, "[('слово', 0.5), ...]")
         try:
-            lst = ast.literal_eval(value)  # преобразустроку в список
-            return len(lst) > 0  # True, если список пустой
+            lst = ast.literal_eval(value)  # преобразуем строку в список
+            return len(lst) > 0  # True, если список не пустой
         except (ValueError, SyntaxError):
             return False
-    elif isinstance(value, list):  # если данные ужеформате списка
+    elif isinstance(value, list):  # если данные уже в формате списка
         return len(value) > 0
     else:
         return False  # на случай других форматов
 
-# Применяем фильтрацию: оставляем строки, где ВСЕ столбцыпохожими словами не пусты
+# Применяем фильтрацию: оставляем строки, где ВСЕ столбцы с похожими словами не пусты
 filtered_data = data[
-    data['bert'].apply(is_valid_similar_words) &
     data['glove'].apply(is_valid_similar_words) &
-    data['pmi'].apply(is_valid_similar_words) &
     data['word2vec'].apply(is_valid_similar_words)
 ]
-n = 100  # кол-во лучайных стр
-random_sample = filtered_data.sample(n=n, random_state=42) # random_state для воспроизводимости
+n = 25  # кол-во случайных строк
+
+random_sample = filtered_data.sample(n=n, random_state=42)  # random_state для воспроизводимости
 
 # Сохраняем в новый CSV-файл
 output_file = 'random_sample_similar_words.csv'
-random_sample.to_csv(output_file, index=Falsencoding='utf-8')
+random_sample.to_csv(output_file, index=False, encoding='utf-8')
 \end{minted}
 
-Полученныый результат отражен на табл. \ref{table:cherrypick}.
-
-Сгенерируем для каждой модели граф.
+\section{Построение графа}
+\label{apx:graph}
 \begin{minted}{python3}
 import pandas as pd
 import os
 
 # Пути к файлам и соответствующие названия колонок
 file_paths = {
-    'bert': '/bert/sim-words5-bert.csv',
-    'glove': '/glove_python/sim-words10-glove.csv',
-    'pmi': '/pmi/similar_words_pmi.csv',
-    'word2vec': '/word2vec/similar_words10.csv'
+    # 'bert': '/bert/sim-words5-bert.csv',
+    'glove': '/glove_python/sim-words_sent_5_glove.csv',
+    'word2vec': '/word2vec/similar_words_sent_5.csv'
 }
+
 
 data = {}
 for model_name, path in file_paths.items():
@@ -593,9 +818,8 @@ for model_name, df in data.items():
         for similar_word, weight in similar_words:
             G.add_edge(word, similar_word, weight=weight)
     graphs[model_name] = G    
-    # nx.write_gexf(G, f"{model_name}_graph.gexf")  # форматEXF для Gephi
-    print(f"Граф '{model_name}' содержит {len(G.nodes)} узлов {len(G.edges)} рёбер.")
-
+    # nx.write_gexf(G, f"{model_name}_graph.gexf")  # формат GEXF для Gephi
+    print(f"Граф '{model_name}' содержит {len(G.nodes)} узлов и {len(G.edges)} рёбер.")
 from community import community_louvain
 for model_name, G in graphs.items():
   print(f"model name: {model_name}")
@@ -613,25 +837,5 @@ for model_name, G in graphs.items():
   modularity = community_louvain.modularity(partition, G, weight='weight')
   print(f"Модулярность: {modularity:.3f}")
 \end{minted}
-
-Результат отражен в табл. \ref{table:graph}.
-
-Визуализируем полученные графы с помощью программы Gephi "--- бесплатный пакет программ для анализа и визуализации сетей. Ознакомиться с результатом можно на рисунках \ref{fig:graph-word2vec}, \ref{fig:graph-glove}.
-
-
-\conclusion
-
-
-% Отобразить все источники. Даже те, на которые нет ссылок.
-% \nocite{*}
-% \inputencoding{cp1251}
-% \bibliographystyle{gost780uv}
-% \bibliography{thesis}
-% \inputencoding{utf8}
-
-% Окончание основного документа и начало приложений Каждая последующая секция
-% документа будет являться приложением
-\appendix
-
 \end{document}
   
