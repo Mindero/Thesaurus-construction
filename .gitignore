@@ -21,3 +21,7 @@ glove_python/ruscorpora_upos_skipgram_300_5_2018/*
 output.pq/*
 glove/*
 data.csv/*
+*.vec
+*.model
+*.kv*
+*.pq
